@@ -26,16 +26,19 @@ Comprehensive toolkit for intelligent source code extraction and security vulner
 - `{hostname}-extraction-SOURCE_MAPS.zip` (if source maps found)
 - `{hostname}-extraction-SOURCE_MAPS.json` OR `{hostname}-extraction-ENDPOINT_EXTRACTION.json`
 
-**Example:** Testing PayCools (merchant.paycools.com.ph)
-```
-[UniversalExtractor] Starting universal extraction...
-[UniversalExtractor] Found 8 script(s)
-[UniversalExtractor] Scanning for source maps... 0 found
-[UniversalExtractor] Switching to ENDPOINT_EXTRACTION mode
-[UniversalExtractor] Extracting endpoints, APIs, keys...
-[UniversalExtractor] Results: 45 endpoints, 12 keys, 8 configs found
-[UniversalExtractor] Exporting JSON...
-```
+On a page without source maps the script reports 0 maps and runs endpoint extraction. Counts depend on the target. No recorded run is included in this file.
+
+### 1b. source-extractor-b.js (copy-paste, use this one)
+
+**File:** `source-extractor-b.js`  
+**Location:** Open the target, click through the app, paste into DevTools Console (Chrome asks you to type "allow pasting" the first time)  
+**Output:** One ZIP with `bundles/`, `maps/`, `sources/`, `_meta/` (summary, endpoints, observed requests, page globals, source index) and `_page/index.html`
+
+- No CDN dependency. It writes its own ZIP, so strict CSP sites still work.
+- Map detection per bundle: `sourceMappingURL` comment, `SourceMap` header, inline data URI, then `<bundle>.map` probe on same-origin bundles (capped at 80).
+- Source paths are sanitized (`..`, drive letters, illegal characters) before files are written.
+- Endpoints, keys and configs are scanned in bundles and in `sourcesContent`. Findings are deduplicated by category and value.
+- Tested in headless Chromium against a local fixture site only.
 
 ---
 

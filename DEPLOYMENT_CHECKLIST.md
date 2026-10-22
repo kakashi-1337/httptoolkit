@@ -1,6 +1,6 @@
 # Universal Source Extraction Toolkit — Deployment Checklist
 
-**Status:** ✅ All tools ready for production use
+**Status:** Only `source-extractor-b.js` has been executed (headless Chromium, local fixture site). All other tools are syntax-checked only.
 
 ---
 
@@ -210,14 +210,14 @@ Check testrce.6u.gg for:
 
 | Vulnerability | PayCools | PriceLocQ | Status |
 |---|---|---|---|
-| SSTI/RCE (_.template) | ✅ | ✅ | Ready |
-| XXE (file upload) | ✅ | ✅ | Ready |
-| SSRF (webhook/avatar) | ✅ | ✅ | Ready |
-| Blind SQLi | ✅ | ✅ | Ready |
-| MFA IDOR | ✅ | — | Ready |
-| NoSQL Injection | ✅ | — | Ready |
-| WebSocket SSTI | — | ✅ | Ready |
-| Prototype Pollution | ✅ | ✅ | Ready |
+| SSTI/RCE (_.template) | ✅ | ✅ | Payloads written, not run |
+| XXE (file upload) | ✅ | ✅ | Payloads written, not run |
+| SSRF (webhook/avatar) | ✅ | ✅ | Payloads written, not run |
+| Blind SQLi | ✅ | ✅ | Payloads written, not run |
+| MFA IDOR | ✅ | — | Payloads written, not run |
+| NoSQL Injection | ✅ | — | Payloads written, not run |
+| WebSocket SSTI | — | ✅ | Payloads written, not run |
+| Prototype Pollution | ✅ | ✅ | Payloads written, not run |
 
 ---
 
@@ -319,8 +319,8 @@ Before starting your security research:
 ```
 Do you have browser access to the target?
 ├─ YES
-│  └─ Use source-extractor-auto.js (DevTools Console)
-│     → Automatically selects SOURCE_MAPS or ENDPOINT_EXTRACTION mode
+│  └─ Use source-extractor-b.js (DevTools Console)
+│     → Uses maps where present; endpoint, secret and config scan runs on every bundle
 │
 └─ NO (scripted/automated testing)
    ├─ If source maps available
@@ -333,54 +333,11 @@ Do you have browser access to the target?
 
 ---
 
-## Performance Expectations
+## Verification Status
 
-| Operation | Time | Notes |
-|---|---|---|
-| Source detection | 5-10s | Scans all loaded scripts |
-| Source maps download | 10-60s | Depends on number of maps |
-| Endpoint extraction | 30-120s | Depends on bundle size |
-| OOB test suite | 5-10min | Includes 500ms delays between tests |
-| Callback receipt | 5-30s | Depends on target processing speed |
-
----
-
-## Success Indicators
-
-### ✅ Successful Extraction
-```
-[UniversalExtractor] Starting universal extraction...
-[UniversalExtractor] Found 8 script(s)
-[UniversalExtractor] Scanning for source maps... 0 found
-[UniversalExtractor] Switching to ENDPOINT_EXTRACTION mode
-[UniversalExtractor] Extracting endpoints, APIs, keys...
-[UniversalExtractor] Total findings: 47 endpoints, 5 keys, 8 configs
-[UniversalExtractor] Results exported as JSON
-[UniversalExtractor] ========================================
-```
-
-### ✅ Successful OOB Test
-```
-[TEST 1a] Report Gen - SSTI via report name/params
-HTTP 200
-[TEST 1b] Report Gen - SSTI via connectionId
-HTTP 200
-[TEST 2a] Driver Batch Import - XXE via CSV
-HTTP 200
-...
-=== Done. Check testrce.6u.gg for callbacks ===
-Any callback = confirmed vulnerability
-```
-
-### ✅ Successful Callback
-```
-GET /rce-report-name HTTP/1.1
-Host: testrce.6u.gg
-User-Agent: curl/7.68.0
-Accept: */*
-
-(This proves the target executed our code)
-```
+- `source-extractor-b.js`: executed in headless Chromium against a local fixture site (external map, inline data-URI map, `.map` probe, header map, SPA fallback, CORS failure, path traversal names, duplicate source names, 15 MB bundle). Not yet run against a live target.
+- `source-extractor-auto.js`, `oob-paycools-tests.sh`, `oob-rce-tests.sh`, `ws-ssti-test.js`, `js-endpoint-extractor.js`: syntax check only.
+- The OOB harnesses have not been executed from this session. Expected callbacks are not confirmed.
 
 ---
 
@@ -406,8 +363,6 @@ See `EXTRACTION_TOOLS.md` for:
 
 ## Summary
 
-✅ **Status: PRODUCTION READY**
-
 **You now have:**
 - 1 Universal auto-detecting extractor
 - 3 Specialized extractors (source maps, endpoints, Node.js)
@@ -415,11 +370,7 @@ See `EXTRACTION_TOOLS.md` for:
 - 1 Deployment helper script
 - Complete documentation
 
-**All tools are:**
-- ✅ Syntax validated
-- ✅ Tested and debugged
-- ✅ Committed to git
-- ✅ Ready for immediate use
+**Committed to git.** Verification status is listed above.
 
 **Begin your security research:**
 ```bash
