@@ -28,6 +28,7 @@ void async function ExtractorB() {
   const PLACEHOLDER = /^(?:\*+|x{3,}|null|undefined|true|false|changeme|password|\$\{.*\})$/i;
   const API_HINT = /\/(?:api|v\d+|rest|graphql|gateway|svc|service|ms-|auth|oauth2?|admin|internal|webhook|upload|download|export|report|merchant|payment|payout|transaction|user|config|setting|token|session|mfa|otp|login|logout|callback|account|wallet|kyc|customer|driver|fleet|invoice)/i;
   const GLOBAL_RE = /config|env|setting|secret|api|firebase|__(?:next|nuxt|initial|app|state|data|preload|apollo|redux|store|runtime)/i;
+  const SENSITIVE_SRC = /\/(admin|auth|payment|checkout|wallet|kyc|banking|credential|private|internal|\.env)/i;
   const MAP_REF = /[#@]\s*sourceMappingURL=([^\s'"*]+)\s*(?:\*\/)?\s*$/gm;
 
   const RULES = [
@@ -263,11 +264,13 @@ void async function ExtractorB() {
       rec.sources = map.sources.length;
       sourceIndex[t.name] = map.sources.map((s, i) => ({ source: String(s), hasContent: typeof contents[i] === 'string' }));
       map.sources.forEach((s, i) => {
+        const srcStr = String(s);
+        if (SENSITIVE_SRC.test(root + srcStr)) addFinding('sensitive-source', (root + srcStr).replace(/^\/+/, ''), t.name);
         const c = contents[i];
         if (typeof c !== 'string') return;
         rec.withContent++;
-        putFile('sources/' + toZipPath(root + String(s)), c);
-        scan(c, t.name + ' :: ' + String(s).slice(0, 120));
+        putFile('sources/' + toZipPath(root + srcStr), c);
+        scan(c, t.name + ' :: ' + srcStr.slice(0, 120));
       });
       if (mapRaw) putRaw('maps/' + t.name + '.map', mapRaw);
     }
@@ -285,6 +288,14 @@ void async function ExtractorB() {
   for (const e of performance.getEntriesByType('resource')) {
     if ((e.initiatorType === 'script' || /\.m?js(?:[?#]|$)/i.test(e.name)) && isHttp(e.name)) jsURLs.add(e.name.split('#')[0]);
   }
+  const cssURLs = new Set();
+  for (const el of document.querySelectorAll('link[rel=stylesheet][href]')) {
+    const u = abs(el.getAttribute('href'), location.href);
+    if (u && isHttp(u) && new URL(u).origin === location.origin) cssURLs.add(u.split('#')[0]);
+  }
+  for (const e of performance.getEntriesByType('resource')) {
+    if (/\.css(?:[?#]|$)/i.test(e.name) && isHttp(e.name) && new URL(e.name).origin === location.origin) cssURLs.add(e.name.split('#')[0]);
+  }
   const targets = [...jsURLs].map((u) => {
     const x = new URL(u);
     return { url: u, name: toZipPath(x.host.replace(/:/g, '_') + x.pathname) };
@@ -293,7 +304,27 @@ void async function ExtractorB() {
     const text = s.textContent || '';
     if (text.trim()) targets.push({ name: 'inline/inline-' + i + (/json/i.test(s.type) ? '.json' : '.js'), text });
   });
-  log('bundles: ' + targets.length + ' (' + jsURLs.size + ' external, ' + (targets.length - jsURLs.size) + ' inline)');
+  for (const u of cssURLs) {
+    const x = new URL(u);
+    targets.push({ url: u, name: 'css/' + toZipPath(x.pathname) });
+  }
+  const MANIFEST_PATHS = ['/asset-manifest.json', '/_next/static/chunks/pages/_buildManifest.js', '/.vite/manifest.json', '/ngsw.json'];
+  const knownUrls = new Set(targets.filter((t) => t.url).map((t) => t.url));
+  for (const mp of MANIFEST_PATHS) {
+    const mr = await fetchText(location.origin + mp);
+    if (!mr.ok) continue;
+    notes.push('manifest found: ' + mp);
+    putRaw('_meta/manifest-' + mp.split('/').pop(), mr.text);
+    for (const mm of mr.text.matchAll(/["']([^"'\s]{3,200}\.m?js)["']/g)) {
+      const chunkUrl = abs(mm[1], location.origin + mp);
+      if (!chunkUrl || knownUrls.has(chunkUrl)) continue;
+      if (new URL(chunkUrl).origin !== location.origin) continue;
+      knownUrls.add(chunkUrl);
+      const x = new URL(chunkUrl);
+      targets.push({ url: chunkUrl, name: toZipPath(x.host.replace(/:/g, '_') + x.pathname) });
+    }
+  }
+  log('bundles: ' + targets.length + ' (' + jsURLs.size + ' JS, ' + cssURLs.size + ' CSS, ' + (targets.length - jsURLs.size - cssURLs.size) + ' inline+manifest)');
   await pool(targets, POOL, async (t) => {
     try {
       await doBundle(t);
